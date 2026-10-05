@@ -1,0 +1,69 @@
+[
+  {
+    "id": "fixture_001",
+    "description": "Clean output — all claims match source",
+    "generated_text": "Revenue grew by 12% in Q3 2023. The CEO Tim Cook confirmed the results.",
+    "source_chunks": [
+      {
+        "chunk_id": "doc1_p2",
+        "text": "Revenue grew by 12% in Q3 2023.",
+        "source_doc": "annual_report_2023.pdf",
+        "page": 2
+      },
+      {
+        "chunk_id": "doc1_p3",
+        "text": "CEO Tim Cook confirmed the quarterly results in a press release.",
+        "source_doc": "annual_report_2023.pdf",
+        "page": 3
+      }
+    ],
+    "expected_results": [
+      {"sentence": "Revenue grew by 12% in Q3 2023.", "status": "GROUNDED"},
+      {"sentence": "The CEO Tim Cook confirmed the results.", "status": "GROUNDED"}
+    ]
+  },
+  {
+    "id": "fixture_002",
+    "description": "Injected mismatch — percentage swapped",
+    "generated_text": "Revenue grew by 18% in Q3 2023.",
+    "source_chunks": [
+      {
+        "chunk_id": "doc1_p2",
+        "text": "Revenue grew by 12% in Q3 2023.",
+        "source_doc": "annual_report_2023.pdf",
+        "page": 2
+      }
+    ],
+    "expected_results": [
+      {
+        "sentence": "Revenue grew by 18% in Q3 2023.",
+        "status": "MISMATCH",
+        "source_value": "12%",
+        "found_value": "18%",
+        "claim_type": "CARDINAL"
+      }
+    ]
+  },
+  {
+    "id": "fixture_003",
+    "description": "Injected mismatch — date swapped",
+    "generated_text": "The product launched in Q1 2024.",
+    "source_chunks": [
+      {
+        "chunk_id": "doc2_p1",
+        "text": "The product launched in Q3 2024.",
+        "source_doc": "product_report.pdf",
+        "page": 1
+      }
+    ],
+    "expected_results": [
+      {
+        "sentence": "The product launched in Q1 2024.",
+        "status": "MISMATCH",
+        "source_value": "Q3 2024",
+        "found_value": "Q1 2024",
+        "claim_type": "DATE"
+      }
+    ]
+  }
+]
