@@ -77,6 +77,74 @@ python -m spacy download en_core_web_sm
 
 ---
 
+## How to use it in your existing pipeline
+
+You already have a RAG pipeline. It probably looks something like this:
+
+```python
+docs = retriever.get_relevant_documents(query)
+response = llm.invoke(docs + query)
+return response
+```
+
+You add Anchor in one place — right before you return the response. Convert your retrieved docs to the format Anchor expects, call verify, decide what to do with the result.
+
+```python
+from anchor import verify
+from anchor.scorer import auto_correct
+
+docs = retriever.get_relevant_documents(query)
+response = llm.invoke(docs + query)
+
+# convert your retrieved docs — one line
+source_chunks = [
+    {
+        "chunk_id": str(i),
+        "text": doc.page_content,
+        "source_doc": doc.metadata.get("source", ""),
+        "page": doc.metadata.get("page", 1)
+    }
+    for i, doc in enumerate(docs)
+]
+
+# run anchor
+report = verify(generated_text=response, source_chunks=source_chunks)
+
+# decide what to do
+if report.trust_score < 80:
+    return "I'm not confident enough in this answer."
+
+return response
+```
+
+That's the entire integration. Three lines added to existing code.
+
+If you use LlamaIndex instead of LangChain the conversion is slightly different but the idea is the same — get the text out of your retrieved nodes and pass it in:
+
+```python
+source_chunks = [
+    {
+        "chunk_id": str(i),
+        "text": node.get_content(),
+        "source_doc": node.metadata.get("file_name", ""),
+        "page": node.metadata.get("page_label", 1)
+    }
+    for i, node in enumerate(retrieved_nodes)
+]
+```
+
+---
+
+## What runs on your machine
+
+Everything. Both models — the BERT NER model and spaCy — run locally. Nothing gets sent anywhere. No API calls, no data leaving your machine, no extra costs per verification.
+
+First time you run it the BERT model downloads automatically. About 400MB, takes a minute, cached after that and never downloaded again.
+
+First call takes 5-6 seconds while models load into memory. Every call after that is under 1 second. In production you'd load the models at startup once and every subsequent verify call is fast.
+
+---
+
 ## How it works
 
 The pipeline has four steps.
