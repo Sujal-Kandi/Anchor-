@@ -1,32 +1,82 @@
 # Anchor
 
-RAG doesn't actually fix hallucinations. It reduces them. The ones that survive are the hard kind — a sentence that reads perfectly fine but has one wrong fact buried inside. A swapped percentage. A wrong year. A name that almost matches.
+RAG reduces hallucinations. It does not eliminate them.
 
-Embedding checks miss these completely. The sentence stays semantically similar to the source after the swap, so cosine similarity says it's fine. It's not fine.
+The hardest failures are often structurally small: a generated sentence
+reads naturally, cites plausible context, and contains one incorrect
+number, date, or name. Embedding-based checks can miss this because the
+sentence remains semantically close to its source even after a value has
+changed.
 
-Anchor catches them by extracting the actual numbers, dates, and names from both the generated text and the source chunks, then comparing them directly. No vectors. No approximations. Just the real values side by side.
+Anchor takes a different approach. It extracts structured values from
+both a generated response and its retrieved source chunks, compares them
+directly, flags mismatches, and can rewrite affected sentences using the
+source value.
 
----
+It is a verification layer for RAG outputs—not a complete fact-checking
+system.
 
-## What it actually does
 
-You pass in a generated RAG response and the source chunks that were retrieved. Anchor splits the response into sentences, pulls out every structured claim in each sentence, finds the matching source chunk, and checks whether the values match.
 
-If a sentence says "revenue grew 18%" and the source says "revenue grew 12%", Anchor flags it, tells you what was found versus what the source says, and rewrites the sentence with the correct value automatically.
+## What Anchor does
 
-Every sentence gets a verdict. The whole response gets a trust score out of 100. You can set a threshold and decide what to do — show it, block it, regenerate, route to human review.
+You provide:
 
----
+- A generated RAG response.
+- The source chunks retrieved for that response.
 
-## Numbers
+Anchor then:
 
-Tested on 40 cases. 20 clean outputs, 20 with injected mismatches across numbers, dates, and names.
+1. Splits the response into sentences.
+2. Extracts structured claims: numbers, dates, percentages, monetary
+   amounts, names, and organisations.
+3. Finds the most relevant source chunk for each sentence.
+4. Extracts comparable claims from that source chunk.
+5. Compares the values.
+6. Returns a per-sentence verdict and an overall trust score.
+7. Can rewrite a mismatched sentence using the value found in the source.
 
-- Recall: 100% — every injected mismatch caught
-- False positive rate: 0% — no clean sentence wrongly flagged
-- Speed: 0.16 seconds per case after models load
+For example, if the response says:
 
----
+> Revenue grew by 18% in Q3 2023.
+
+and the retrieved source says:
+
+> Revenue grew by 12% in Q3 2023.
+
+Anchor flags the percentage mismatch and can rewrite the sentence to use
+the source value.
+
+## Important scope
+
+Anchor checks **structured claims against retrieved source chunks**.
+
+It does not determine whether:
+
+- The retrieved chunks themselves are correct.
+- The selected source chunk is the right evidence for the sentence.
+- A relationship between two entities is correct.
+- An unsupported qualitative or causal claim is true.
+
+A response can pass Anchor's checks and still contain an unsupported
+claim if that claim has no comparable structured value in the source.
+
+## Evaluation
+
+Anchor was evaluated on **40 synthetic test cases**:
+
+- 20 clean responses.
+- 20 responses with injected mismatches across numbers, dates, and names.
+
+| Metric | Result |
+|---|---|
+| Injected-mismatch recall | 100% |
+| False-positive rate | 0% |
+| Average verification time | 0.16 seconds per case after model loading |
+
+These results describe performance on this small, purpose-built test
+set. They do not establish accuracy on open-ended production RAG data,
+complex multi-hop questions, or every type of factual error.
 
 ## Quick start
 
@@ -47,17 +97,20 @@ report = verify(
 print(report.trust_score)
 # 0
 
-print(report.results[0].status)
+print(report.results.status)
 # MISMATCH
 
-print(report.results[0].found_value, "->", report.results[0].source_value)
+print(report.results.found_value, "->", report.results.source_value)
 # 89.5 -> 119.6
 
-print(auto_correct(report.results[0]))
+corrected_response = auto_correct(report)
+print(corrected_response)
 # Apple reported revenue of $119.6 billion in Q1 2024.
 ```
 
----
+`auto_correct()` replaces mismatched structured values with the values
+found in the retrieved source and returns the full corrected response.
+```
 
 ## Installation
 
@@ -66,28 +119,18 @@ pip install anchor-verify
 python -m spacy download en_core_web_sm
 ```
 
-Or from source:
+Or install from source:
 
 ```bash
-git clone https://github.com/Sujal-Kandi/anchor
-cd anchor
+git clone [https://github.com/Sujal-Kandi/Anchor-.git](https://github.com/Sujal-Kandi/Anchor-.git)
+cd Anchor-
 pip install -e ".[dev]"
 python -m spacy download en_core_web_sm
 ```
 
----
+## Use it in a RAG pipeline
 
-## How to use it in your existing pipeline
-
-You already have a RAG pipeline. It probably looks something like this:
-
-```python
-docs = retriever.get_relevant_documents(query)
-response = llm.invoke(docs + query)
-return response
-```
-
-You add Anchor in one place — right before you return the response. Convert your retrieved docs to the format Anchor expects, call verify, decide what to do with the result.
+Anchor sits between generation and the response returned to the user.
 
 ```python
 from anchor import verify
@@ -96,7 +139,6 @@ from anchor.scorer import auto_correct
 docs = retriever.get_relevant_documents(query)
 response = llm.invoke(docs + query)
 
-# convert your retrieved docs — one line
 source_chunks = [
     {
         "chunk_id": str(i),
@@ -107,21 +149,27 @@ source_chunks = [
     for i, doc in enumerate(docs)
 ]
 
-# run anchor
 report = verify(generated_text=response, source_chunks=source_chunks)
 
-# decide what to do
 if report.trust_score < 80:
     return "I'm not confident enough in this answer."
 
-return response
+corrected_response = auto_correct(report)
+return corrected_response
 ```
 
-That's the entire integration. Three lines added to existing code.
+`auto_correct()` returns the full response with detected mismatched
+structured values replaced by their source values.
 
-If you use LlamaIndex instead of LangChain the conversion is slightly different but the idea is the same — get the text out of your retrieved nodes and pass it in:
+You can also use the verification report directly if you prefer to block,
+regenerate, or route low-confidence responses to human review instead of
+automatically correcting them.
+
+### LlamaIndex-style integration
 
 ```python
+from anchor import verify
+
 source_chunks = [
     {
         "chunk_id": str(i),
@@ -131,56 +179,88 @@ source_chunks = [
     }
     for i, node in enumerate(retrieved_nodes)
 ]
+
+report = verify(
+    generated_text=response,
+    source_chunks=source_chunks
+)
 ```
 
----
+The integration pattern is the same: convert retrieved content into
+Anchor's source-chunk format, run verification, then decide whether to
+return, block, regenerate, or send the response for human review.
 
-## What runs on your machine
+## How verification works
 
-Everything. Both models — the BERT NER model and spaCy — run locally. Nothing gets sent anywhere. No API calls, no data leaving your machine, no extra costs per verification.
+### 1. Sentence segmentation
 
-First time you run it the BERT model downloads automatically. About 400MB, takes a minute, cached after that and never downloaded again.
+Anchor uses spaCy to split generated text into sentences.
 
-First call takes 5-6 seconds while models load into memory. Every call after that is under 1 second. In production you'd load the models at startup once and every subsequent verify call is fast.
+This avoids simplistic splitting on full stops, which can incorrectly
+break abbreviations such as `Dr.` or decimal values such as `$12.5M`.
 
----
+### 2. Claim extraction
 
-## How it works
+For each sentence, Anchor extracts structured values:
 
-The pipeline has four steps.
+- Numbers.
+- Percentages.
+- Dates and years.
+- Monetary amounts.
+- Person names.
+- Organisations.
 
-First it splits the generated text into sentences using spaCy. Not a naive split on periods — spaCy handles abbreviations and decimal numbers correctly so "Dr. Smith" and "$12.5M" don't get split in the wrong place.
+It uses a local BERT NER model for names and organisations, and spaCy
+for numeric entities.
 
-Then for each sentence it extracts structured claims. Numbers, dates, percentages, money amounts, names, organizations. It uses two models for this — a BERT NER model for names and organizations, and spaCy for numeric entities. Each model is better at what it does.
+### 3. Source matching
 
-Then it finds the most relevant source chunk for that sentence and extracts the same types of claims from it.
+Anchor selects the most relevant source chunk for each generated
+sentence, extracts comparable claims from it, and compares the values.
 
-Then it compares. Numbers and dates use exact matching — "12%" and "18%" are just not equal, no approximation needed. Names use fuzzy matching because "Tim Cook" and "Timothy Cook" should be treated as the same person. If anything doesn't match, it's flagged immediately with the found value and what the source actually says.
+This is a retrieval-and-comparison heuristic. It does not prove that the
+selected chunk is the only relevant evidence or the best evidence for
+the sentence.
 
-Sentences with no extractable structured claims get a NO_CLAIMS verdict. That's not an error — it means the sentence is probably a causal or subjective statement that the deterministic pipeline can't verify. A future LLM fallback will handle those.
+### 4. Value comparison
 
----
+Numbers, dates, percentages, and monetary values are compared exactly.
+`18%` and `12%` are not treated as equivalent.
 
-## What each result looks like
+Names and organisations use fuzzy matching so variants such as
+`Tim Cook` and `Timothy Cook` can be treated as the same entity.
 
-```python
+Fuzzy matching reduces false positives, but it can also miss
+relationships or distinctions between similarly named entities.
+
+## Result format
+
+```json
 {
-    "sentence": "Revenue grew by 18% in Q3 2023.",
-    "status": "MISMATCH",
-    "found_value": "18%",
-    "source_value": "12%",
-    "claim_type": "PERCENT"
+  "sentence": "Revenue grew by 18% in Q3 2023.",
+  "status": "MISMATCH",
+  "found_value": "18%",
+  "source_value": "12%",
+  "claim_type": "PERCENT"
 }
 ```
 
-Status can be GROUNDED, MISMATCH, UNVERIFIABLE, or NO_CLAIMS.
+| Status | Meaning |
+|---|---|
+| `GROUNDED` | Every extractable structured claim matched a comparable source claim. |
+| `MISMATCH` | At least one comparable source claim has a different value. |
+| `UNVERIFIABLE` | The sentence contains claims, but no comparable claim type was found in the source. |
+| `NO_CLAIMS` | No structured claims were extracted from the sentence. |
 
-GROUNDED means every extractable claim in the sentence matched a source claim.
-MISMATCH means at least one claim was found in the source but the values don't match.
-UNVERIFIABLE means the sentence has claims but none of the claim types appeared in the source at all.
-NO_CLAIMS means no structured claims were extracted — routes to LLM fallback if enabled.
+`NO_CLAIMS` is not an error. It means the sentence is qualitative,
+causal, or otherwise lacks structured values that the current
+deterministic pipeline can compare.
 
----
+The current version does not automatically route these sentences to an
+LLM fallback.
+
+
+
 
 ## Configuration
 
@@ -189,37 +269,121 @@ from anchor import verify, AnchorConfig
 
 config = AnchorConfig(
     fuzzy_match_threshold=85,
-    llm_fallback_enabled=False,
+    llm_fallback_enabled=False
 )
 
-report = verify(generated_text, source_chunks, config=config)
+report = verify(
+    generated_text=text,
+    source_chunks=source_chunks,
+    config=config
+)
 ```
 
----
+## What it catches
 
-## What it catches and what it doesn't
+Anchor is designed to catch direct value mismatches, including:
 
-It catches wrong numbers, wrong percentages, wrong dates, wrong years, wrong quarters, wrong names, wrong organizations. These are the most common and most dangerous hallucinations in RAG outputs — they read fluently and look correct until you check the source.
+- Incorrect numbers.
+- Incorrect percentages.
+- Incorrect dates, years, and quarters.
+- Incorrect monetary amounts.
+- Incorrect person names.
+- Incorrect organisation names.
 
-It doesn't catch paraphrased contradictions or causal errors. "The company grew revenue" versus "the company lost revenue" — no numbers to extract, nothing to compare. That's what the LLM fallback is for and it's not built yet.
+These are useful checks because a single changed value can make a fluent
+sentence factually wrong.
 
----
+## What it does not catch
 
-## Why not just use embeddings
+Anchor does not fully solve hallucination detection.
 
-Embeddings compare meaning. "Revenue grew by 18%" and "Revenue grew by 12%" are nearly identical in embedding space — one token changed, no semantic difference. Cosine similarity will tell you they're the same. They're not.
+It does not reliably catch:
 
-Anchor extracts the actual values. 18 and 12 are not equal. That's the whole idea.
+- Paraphrased contradictions.
+- Incorrect causal claims.
+- Unsupported qualitative statements.
+- Incorrect relationships between entities.
+- Claims where the correct source evidence was not retrieved.
+- Errors in the source documents themselves.
 
----
+For example, this sentence contains no structured value to compare:
+
+> The company grew revenue because it expanded into new markets.
+
+Anchor cannot determine from value comparison alone whether that causal
+explanation is supported.
+
+An LLM-based fallback for ambiguous or non-structured claims is planned,
+but it is not part of the current deterministic pipeline.
+
+## Why not embeddings alone?
+
+Embeddings measure semantic similarity.
+
+These two sentences are very close in embedding space:
+
+> Revenue grew by 18% in Q3 2023.  
+> Revenue grew by 12% in Q3 2023.
+
+A small value change may not move the embedding enough to trigger a
+similarity-based warning.
+
+Anchor compares the extracted values directly. `18` and `12` are not
+equal.
+
+Embeddings and deterministic checks solve different problems. Anchor
+focuses on the second: exact mismatches in structured claims.
+
+## Local execution
+
+Anchor runs locally.
+
+- The BERT NER model and spaCy model run on your machine.
+- Verification does not send your text to an external API.
+- There are no per-verification API costs.
+
+The BERT model is downloaded once on first use, cached locally, and
+reused afterwards.
+
+The first verification call includes model-loading time. Subsequent
+calls are faster. For a service, load the models once during startup
+rather than per request.
 
 ## Project status
 
-This is an active build documented publicly as it's built. The library works end to end. LLM fallback for ambiguous claims is the next thing being built.
+Anchor is an active project.
 
-Built by Sujal Kandi. If you're using this or have feedback, open an issue or reach out.
+The deterministic verification workflow works end to end. Planned work
+includes:
 
----
+- LLM fallback for qualitative and causal claims.
+- Better source-chunk selection and multi-chunk evidence handling.
+- Relationship-level verification.
+- Evaluation on realistic, non-synthetic RAG datasets.
+- More detailed reporting for partial matches and conflicting evidence.
+
+## Performance
+
+On my machine, verification took approximately **0.16 seconds per case**
+after the models were loaded.
+
+The first call takes approximately **5–6 seconds** because the local
+models need to load into memory. Subsequent calls are faster.
+
+For a service, load the models once during startup rather than loading
+them for every request.
+
+These timings were measured locally and will vary by hardware, model
+loading state, input length, and number of source chunks.
+
+## Future work: LLM fallback
+
+An LLM-based fallback for qualitative, causal, and ambiguous claims is a
+planned future feature. It is **not implemented** in the current version.
+
+The current pipeline uses deterministic extraction and comparison for
+structured claims. It does not verify unsupported qualitative statements
+or causal explanations.
 
 ## License
 
